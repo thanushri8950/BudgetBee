@@ -1,0 +1,8 @@
+
+--- Expense Report ---
+Vendor: RECEIPT;
+Total Amount: None
+Items:
+- Xt: 77.0
+- #otrrrrrrrrtrtrt#rrrrr*Krrrtt =: 1.2345677896357802e+17
+- 4t42076744: 2153.0
