@@ -63,19 +63,69 @@ st.markdown(f"""
         border-radius: 8px;
         margin: 10px 0;
     }}
-    .info-message {{
-        background-color: {SECONDARY_COLOR};
-        color: {BACKGROUND_COLOR};
-        padding: 15px;
-        border-radius: 8px;
-        margin: 10px 0;
-    }}
 </style>
 """, unsafe_allow_html=True)
 
 # --- Check for OCR dependencies ---
-OCR_AVAILABLE = False  # Force disable for cloud deployment
-OCR_ENABLED = False   # Control variable
+try:
+    import cv2
+    import easyocr
+    import re
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+
+# -------------------------------
+# 1. VISION & EXTRACTION CORE (OCR Function)
+# -------------------------------
+def process_receipt_image(uploaded_file):
+    """Process receipt image with OCR and return parsed data."""
+    if not OCR_AVAILABLE:
+        return None, None, []
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        tmp_img_path = tmp_file.name
+
+    try:
+        image = cv2.imread(tmp_img_path)
+        if image is None:
+            return None, None, []
+
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        thresh_image = cv2.adaptiveThreshold(gray_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+
+        reader = easyocr.Reader(['en'])
+        results = reader.readtext(thresh_image)
+
+        total_amount = None
+        vendor_name = None
+        items_list = []
+
+        # Parse receipt data
+        for _, text, prob in results:
+            text_clean = text.upper().replace(' ', '').replace('$', '')
+            if 'TOTAL' in text_clean and prob > 0.3:
+                numbers_found = re.findall(r'\d+\.\d{2}', text_clean)
+                if numbers_found:
+                    total_amount = float(numbers_found[0])
+                    break
+
+        for i, (_, text, prob) in enumerate(results):
+            if i < 3 and prob > 0.4 and vendor_name is None:
+                vendor_name = text
+            if prob > 0.3:
+                numbers_in_text = re.findall(r'\d+\.\d{2}', text)
+                if numbers_in_text and len(text) > 3:
+                    item_desc = re.sub(r'\d+\.\d{2}', '', text).strip()
+                    items_list.append({'item': item_desc, 'price': float(numbers_in_text[0])})
+
+        return vendor_name, total_amount, items_list
+
+    except Exception as e:
+        return None, None, []
+    finally:
+        os.unlink(tmp_img_path)
 
 # -------------------------------
 # 2. ANALYTICS ENGINE
@@ -124,15 +174,6 @@ st.set_page_config(page_title="BudgetBee - Premium Tracker", layout="wide", page
 st.sidebar.markdown(f"<h1 style='color: {ACCENT_COLOR};'>BudgetBee 🐝</h1>", unsafe_allow_html=True)
 st.sidebar.markdown(f"<p style='color: {SECONDARY_COLOR};'>The Complete ETHOS Stack Expense Tracker</p>", unsafe_allow_html=True)
 
-# OCR Status in Sidebar
-if not OCR_AVAILABLE:
-    st.sidebar.markdown(f"""
-    <div class='warning-message'>
-        ⚠️ OCR Disabled<br>
-        <small>Receipt scanning requires local installation</small>
-    </div>
-    """, unsafe_allow_html=True)
-
 page = st.sidebar.radio("Navigate", ["📊 Dashboard", "💸 Add Expense", "📷 Receipt Scanner", "⚙️ Manage Expenses"])
 
 # Dashboard Page
@@ -175,7 +216,7 @@ if page == "📊 Dashboard":
         st.bar_chart(category_totals)
 
     else:
-        st.info("No expenses recorded yet. Add some via 'Add Expense'!")
+        st.info("No expenses recorded yet. Add some via 'Add Expense' or 'Receipt Scanner'!")
 
 # Add Expense Page
 elif page == "💸 Add Expense":
@@ -203,7 +244,6 @@ elif page == "💸 Add Expense":
                     ✅ Expense added successfully! ${amount:.2f} for {desc}
                 </div>
                 """, unsafe_allow_html=True)
-                st.rerun()
             else:
                 st.error("Please fill in description and amount.")
 
@@ -213,44 +253,38 @@ elif page == "📷 Receipt Scanner":
     
     if not OCR_AVAILABLE:
         st.markdown(f"""
-        <div class='info-message'>
-            <h3>📋 Manual Receipt Entry</h3>
-            <p>OCR feature is disabled for cloud deployment. You can manually enter receipt details below.</p>
+        <div class='warning-message'>
+            ⚠️ Receipt scanning is disabled. Required libraries could not be installed.
         </div>
         """, unsafe_allow_html=True)
+    else:
+        uploaded_file = st.file_uploader("Upload receipt image (JPG, PNG)", type=['jpg', 'jpeg', 'png'])
         
-        # Manual receipt entry form
-        with st.form("manual_receipt_form"):
-            st.subheader("📝 Enter Receipt Details Manually")
+        if uploaded_file is not None:
+            st.image(uploaded_file, caption="Uploaded Receipt", use_column_width=True)
             
-            col1, col2 = st.columns(2)
-            with col1:
-                receipt_date = st.date_input("Receipt Date", datetime.today())
-                receipt_vendor = st.text_input("Store/Vendor Name")
-            with col2:
-                receipt_total = st.number_input("Total Amount ($)", min_value=0.0, step=1.0, format="%.2f")
-                receipt_category = st.selectbox("Category", ["Food", "Transport", "Entertainment", "Utilities", "Shopping", "Other"])
-            
-            receipt_description = st.text_input("Description (optional)", value="Receipt purchase")
-            
-            if st.form_submit_button("💾 Add Receipt Expense"):
-                if receipt_total > 0:
-                    vendor_text = f" at {receipt_vendor}" if receipt_vendor else ""
-                    desc = f"{receipt_description}{vendor_text}"
+            if st.button("🔍 Extract Data from Receipt"):
+                with st.spinner("Processing image with AI... 🤖"):
+                    vendor, total, items = process_receipt_image(uploaded_file)
+                
+                if vendor or items:
+                    st.success("Data extracted successfully!")
+                    st.write(f"**🏪 Vendor:** {vendor if vendor else 'Unknown'}")
+                    st.write(f"**💰 Total:** ${total if total else 'Not detected'}")
                     
-                    new_row = pd.DataFrame([[receipt_date, desc, receipt_total, receipt_category]], 
-                                          columns=['Date', 'Description', 'Amount', 'Category'])
-                    st.session_state.df_expenses = pd.concat([st.session_state.df_expenses, new_row], ignore_index=True)
-                    save_data(st.session_state.df_expenses)
-                    
-                    st.markdown(f"""
-                    <div class='success-message'>
-                        ✅ Receipt added successfully! ${receipt_total:.2f} for {desc}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    st.rerun()
-                else:
-                    st.error("Please enter a valid total amount.")
+                    if items:
+                        st.write("**🛒 Items Found:**")
+                        df_extracted = pd.DataFrame(items)
+                        st.dataframe(df_extracted.style.format({'price': '${:.2f}'}), use_container_width=True)
+                        
+                        if total and st.button(f"💾 Add Total (${total}) to Expenses"):
+                            today = datetime.today().date()
+                            category = categorize_expense(vendor if vendor else "Receipt Purchase")
+                            new_row = pd.DataFrame([[today, f"{vendor} (Receipt)" if vendor else 'Receipt Purchase', total, category]], 
+                                                  columns=['Date', 'Description', 'Amount', 'Category'])
+                            st.session_state.df_expenses = pd.concat([st.session_state.df_expenses, new_row], ignore_index=True)
+                            save_data(st.session_state.df_expenses)
+                            st.success(f"Added ${total} to your expenses!")
 
 # Manage Expenses Page (with Delete functionality)
 elif page == "⚙️ Manage Expenses":
@@ -301,13 +335,3 @@ elif page == "⚙️ Manage Expenses":
 # Footer
 st.sidebar.markdown("---")
 st.sidebar.markdown(f"<p style='color: {SECONDARY_COLOR}; font-size: 12px;'>ETHOS Stack: Extraction, Tracking, Hub, Optimization, System</p>", unsafe_allow_html=True)
-
-# Local instructions in sidebar
-st.sidebar.markdown("---")
-st.sidebar.markdown(f"""
-<div class='info-message'>
-    <h4>🚀 Local Development</h4>
-    <p>For full OCR features, run locally:</p>
-    <code>pip install opencv-python easyocr</code>
-</div>
-""", unsafe_allow_html=True)
