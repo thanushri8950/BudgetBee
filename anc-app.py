@@ -22,3 +22,14 @@ def predict():
 
 if __name__ == "__main__":
     app.run(debug=True)
+
+# dummy_model.py
+import joblib
+
+class DummyPipeline:
+    def predict(self, X):
+        # Always predicts "Other" for now
+        return ["Other" for _ in X]
+
+joblib.dump(DummyPipeline(), "budgetbee_pipeline.joblib")
+
